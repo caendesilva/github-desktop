@@ -54,6 +54,9 @@ interface IAutocompletingTextInputProps<ElementType, AutocompleteItemType> {
   /** Indicates if it should always try to autocomplete. Optional (defaults to false) */
   readonly alwaysAutocomplete?: boolean
 
+  /** Maxlength */
+  readonly maxlength?: string
+
   /** Filter for autocomplete items */
   readonly autocompleteItemFilter?: (item: AutocompleteItemType) => boolean
 
@@ -409,6 +412,7 @@ export abstract class AutocompletingTextInput<
       required: this.props.required ? true : false,
       spellCheck: this.props.spellcheck,
       autoComplete: 'off',
+      maxlength: 72,
       'aria-expanded': autocompleteVisible,
       'aria-autocomplete': 'list' as const,
       'aria-haspopup': 'listbox' as const,
