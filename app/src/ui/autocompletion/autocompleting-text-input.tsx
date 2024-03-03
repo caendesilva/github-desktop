@@ -54,9 +54,6 @@ interface IAutocompletingTextInputProps<ElementType, AutocompleteItemType> {
   /** Indicates if it should always try to autocomplete. Optional (defaults to false) */
   readonly alwaysAutocomplete?: boolean
 
-  /** Maxlength */
-  readonly maxlength?: string
-
   /** Filter for autocomplete items */
   readonly autocompleteItemFilter?: (item: AutocompleteItemType) => boolean
 
