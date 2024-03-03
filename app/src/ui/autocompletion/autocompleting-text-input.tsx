@@ -409,7 +409,7 @@ export abstract class AutocompletingTextInput<
       required: this.props.required ? true : false,
       spellCheck: this.props.spellcheck,
       autoComplete: 'off',
-      maxlength: 72,
+      maxlength: this.props.required ? 72 : undefined,
       'aria-expanded': autocompleteVisible,
       'aria-autocomplete': 'list' as const,
       'aria-haspopup': 'listbox' as const,
