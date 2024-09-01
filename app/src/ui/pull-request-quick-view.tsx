@@ -8,6 +8,7 @@ import { SandboxedMarkdown } from './lib/sandboxed-markdown'
 import { Octicon } from './octicons'
 import * as octicons from './octicons/octicons.generated'
 import classNames from 'classnames'
+import { Emoji } from '../lib/emoji'
 
 /**
  * The max height of the visible quick view card is 556 (500 for scrollable
@@ -33,7 +34,7 @@ interface IPullRequestQuickViewProps {
   readonly onMouseLeave: () => void
 
   /** Map from the emoji shortcut (e.g., :+1:) to the image's local path. */
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
 
   readonly underlineLinks: boolean
 }
@@ -162,7 +163,11 @@ export class PullRequestQuickView extends React.Component<
       <header className="header">
         <Octicon symbol={octicons.listUnordered} />
         <div className="action-needed">Review requested</div>
-        <Button className="button-with-icon" onClick={this.onViewOnGitHub}>
+        <Button
+          className="button-with-icon"
+          onClick={this.onViewOnGitHub}
+          role="link"
+        >
           View on GitHub
           <Octicon symbol={octicons.linkExternal} />
         </Button>
@@ -212,6 +217,7 @@ export class PullRequestQuickView extends React.Component<
           onMarkdownLinkClicked={this.onMarkdownLinkClicked}
           onMarkdownParsed={this.onMarkdownParsed}
           underlineLinks={this.props.underlineLinks}
+          ariaLabel="Pull request markdown body"
         />
       </div>
     )

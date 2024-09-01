@@ -23,6 +23,7 @@ import { BranchType, Branch } from '../../models/branch'
 import { PopupType } from '../../models/popup'
 import { generateBranchContextMenuItems } from '../branches/branch-list-item-context-menu'
 import { showContextualMenu } from '../../lib/menu-item'
+import { Emoji } from '../../lib/emoji'
 
 interface IBranchDropdownProps {
   readonly dispatcher: Dispatcher
@@ -62,7 +63,7 @@ interface IBranchDropdownProps {
   readonly showCIStatusPopover: boolean
 
   /** Map from the emoji shortcut (e.g., :+1:) to the image's local path. */
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
 
   /** Whether the dropdown will trap focus or not. Defaults to true.
    *
@@ -365,7 +366,7 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
     )
   }
 
-  private onBadgeRef = (ref: HTMLSpanElement | null) => {
+  private onBadgeRef = (ref: HTMLButtonElement | null) => {
     this.badgeRef = ref
   }
 
@@ -383,6 +384,7 @@ export class BranchDropdown extends React.Component<IBranchDropdownProps> {
         repository={pr.base.gitHubRepository}
         onBadgeRef={this.onBadgeRef}
         onBadgeClick={this.onBadgeClick}
+        showCIStatusPopover={this.props.showCIStatusPopover}
       />
     )
   }

@@ -2,11 +2,15 @@ import { spawn, ChildProcess } from 'child_process'
 import * as Path from 'path'
 import { enumerateValues, HKEY, RegistryValueType } from 'registry-js'
 import { assertNever } from '../fatal-error'
-import { IFoundShell } from './found-shell'
 import { enableWSLDetection } from '../feature-flag'
 import { findGitOnPath } from '../is-git-on-path'
 import { parseEnumValue } from '../enum'
 import { pathExists } from '../../ui/lib/path-exists'
+import { FoundShell } from './shared'
+import {
+  expandTargetPathArgument,
+  ICustomIntegration,
+} from '../custom-integration'
 
 export enum Shell {
   Cmd = 'Command Prompt',
@@ -28,12 +32,12 @@ export function parse(label: string): Shell {
 }
 
 export async function getAvailableShells(): Promise<
-  ReadonlyArray<IFoundShell<Shell>>
+  ReadonlyArray<FoundShell<Shell>>
 > {
   const gitPath = await findGitOnPath()
   const rootDir = process.env.WINDIR || 'C:\\Windows'
   const dosKeyExePath = `"${rootDir}\\system32\\doskey.exe git=^"${gitPath}^" $*"`
-  const shells: IFoundShell<Shell>[] = [
+  const shells: FoundShell<Shell>[] = [
     {
       shell: Shell.Cmd,
       path: process.env.comspec || 'C:\\Windows\\System32\\cmd.exe',
@@ -392,7 +396,7 @@ async function findFluentTerminal(): Promise<string | null> {
 }
 
 export function launch(
-  foundShell: IFoundShell<Shell>,
+  foundShell: FoundShell<Shell>,
   path: string
 ): ChildProcess {
   const shell = foundShell.shell
@@ -474,4 +478,16 @@ export function launch(
     default:
       return assertNever(shell, `Unknown shell: ${shell}`)
   }
+}
+
+export function launchCustomShell(
+  customShell: ICustomIntegration,
+  path: string
+): ChildProcess {
+  log.info(`launching custom shell at path: ${customShell.path}`)
+  const args = expandTargetPathArgument(customShell.arguments, path)
+  return spawn(`"${customShell.path}"`, args, {
+    shell: true,
+    cwd: path,
+  })
 }

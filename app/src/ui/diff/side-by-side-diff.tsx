@@ -7,6 +7,7 @@ import {
   DiffLine,
   DiffSelection,
   DiffHunkExpansionType,
+  DiffSelectionType,
 } from '../../models/diff'
 import {
   getLineFilters,
@@ -29,7 +30,12 @@ import {
   OverscanIndicesGetterParams,
   defaultOverscanIndicesGetter,
 } from 'react-virtualized'
-import { IRowSelectableGroup, SideBySideDiffRow } from './side-by-side-diff-row'
+import {
+  CheckBoxIdentifier,
+  IRowSelectableGroup,
+  IRowSelectableGroupStaticData,
+  SideBySideDiffRow,
+} from './side-by-side-diff-row'
 import memoize from 'memoize-one'
 import {
   findInteractiveOriginalDiffRange,
@@ -50,9 +56,10 @@ import {
   MaxIntraLineDiffStringLength,
   getFirstAndLastClassesSideBySide,
   textDiffEquals,
+  isRowChanged,
 } from './diff-helpers'
 import { showContextualMenu } from '../../lib/menu-item'
-import { getTokens } from './diff-syntax-mode'
+import { getTokens } from './get-tokens'
 import { DiffSearchInput } from './diff-search-input'
 import {
   expandTextDiffHunk,
@@ -64,6 +71,7 @@ import { DiffContentsWarning } from './diff-contents-warning'
 import { findDOMNode } from 'react-dom'
 import escapeRegExp from 'lodash/escapeRegExp'
 import ReactDOM from 'react-dom'
+import { AriaLiveContainer } from '../accessibility/aria-live-container'
 
 const DefaultRowHeight = 20
 
@@ -76,6 +84,8 @@ export interface ISelection {
 
   readonly isSelected: boolean
 }
+
+type SearchDirection = 'next' | 'previous'
 
 type ModifiedLine = { line: DiffLine; diffLineNumber: number }
 
@@ -203,6 +213,8 @@ interface ISideBySideDiffState {
 
   readonly selectedSearchResult: number | undefined
 
+  readonly ariaLiveMessage: string
+
   /** This tracks the last expanded hunk index so that we can refocus the expander after rerender */
   readonly lastExpandedHunk: {
     hunkIndex: number
@@ -228,7 +240,25 @@ export class SideBySideDiff extends React.Component<
   private textSelectionStartRow: number | undefined = undefined
   private textSelectionEndRow: number | undefined = undefined
 
+  private renderedStartIndex: number = 0
+  private renderedStopIndex: number | undefined = undefined
+
   private readonly hunkExpansionRefs = new Map<string, HTMLButtonElement>()
+
+  /**
+   * This is just a signal that will toggle whenever the aria live message
+   * changes, indicating it should be reannounced by screen readers.
+   */
+  private ariaLiveChangeSignal: boolean = false
+
+  /**
+   * Caches a group of selectable row's information that does not change on row
+   * rerender like line numbers using the row's hunkStartLline as the key.
+   */
+  private readonly rowSelectableGroupStaticDataCache = new Map<
+    number,
+    IRowSelectableGroupStaticData
+  >()
 
   public constructor(props: ISideBySideDiffProps) {
     super(props)
@@ -239,6 +269,7 @@ export class SideBySideDiff extends React.Component<
       selectedSearchResult: undefined,
       selectingTextInRow: 'before',
       lastExpandedHunk: null,
+      ariaLiveMessage: '',
     }
   }
 
@@ -255,6 +286,20 @@ export class SideBySideDiff extends React.Component<
     document.addEventListener('copy', this.onCutOrCopy)
 
     document.addEventListener('selectionchange', this.onDocumentSelectionChange)
+
+    this.addContextMenuListenerToDiff()
+  }
+
+  private addContextMenuListenerToDiff = () => {
+    const diffNode = findDOMNode(this.virtualListRef.current)
+    const diff = diffNode instanceof HTMLElement ? diffNode : null
+    diff?.addEventListener('contextmenu', this.onContextMenuText)
+  }
+
+  private removeContextMenuListenerFromDiff = () => {
+    const diffNode = findDOMNode(this.virtualListRef.current)
+    const diff = diffNode instanceof HTMLElement ? diffNode : null
+    diff?.removeEventListener('contextmenu', this.onContextMenuText)
   }
 
   private onCutOrCopy = (ev: ClipboardEvent) => {
@@ -376,6 +421,7 @@ export class SideBySideDiff extends React.Component<
       this.onDocumentSelectionChange
     )
     document.removeEventListener('mousemove', this.onUpdateSelection)
+    this.removeContextMenuListenerFromDiff()
   }
 
   public componentDidUpdate(
@@ -392,6 +438,7 @@ export class SideBySideDiff extends React.Component<
     if (!textDiffEquals(this.props.diff, prevProps.diff)) {
       this.diffToRestore = null
       this.setState({ diff: this.props.diff, lastExpandedHunk: null })
+      this.rowSelectableGroupStaticDataCache.clear()
     }
 
     // Scroll to top if we switched to a new file
@@ -411,6 +458,12 @@ export class SideBySideDiff extends React.Component<
           selection.empty()
         }
       }
+
+      this.rowSelectableGroupStaticDataCache.clear()
+    }
+
+    if (prevProps.showSideBySideDiff !== this.props.showSideBySideDiff) {
+      this.rowSelectableGroupStaticDataCache.clear()
     }
 
     if (this.state.lastExpandedHunk !== prevState.lastExpandedHunk) {
@@ -528,8 +581,16 @@ export class SideBySideDiff extends React.Component<
     )
   }
 
+  private onRowsRendered = (info: {
+    startIndex: number
+    stopIndex: number
+  }) => {
+    this.renderedStartIndex = info.startIndex
+    this.renderedStopIndex = info.stopIndex
+  }
+
   public render() {
-    const { diff } = this.state
+    const { diff, ariaLiveMessage, isSearching } = this.state
 
     const rows = this.getCurrentDiffRows()
     const containerClassName = classNames('side-by-side-diff-container', {
@@ -548,7 +609,7 @@ export class SideBySideDiff extends React.Component<
         onKeyDown={this.onKeyDown}
       >
         <DiffContentsWarning diff={diff} />
-        {this.state.isSearching && (
+        {isSearching && (
           <DiffSearchInput
             onSearch={this.onSearch}
             onClose={this.onSearchCancel}
@@ -558,6 +619,10 @@ export class SideBySideDiff extends React.Component<
           className="side-by-side-diff cm-s-default"
           ref={this.onDiffContainerRef}
         >
+          <AriaLiveContainer
+            message={ariaLiveMessage}
+            trackedUserInput={this.ariaLiveChangeSignal}
+          />
           <AutoSizer onResize={this.clearListRowsHeightCache}>
             {({ height, width }) => (
               <List
@@ -567,12 +632,13 @@ export class SideBySideDiff extends React.Component<
                 rowCount={rows.length}
                 rowHeight={this.getRowHeight}
                 rowRenderer={this.renderRow}
+                onRowsRendered={this.onRowsRendered}
                 ref={this.virtualListRef}
                 overscanIndicesGetter={this.overscanIndicesGetter}
                 // The following properties are passed to the list
                 // to make sure that it gets re-rendered when any of
                 // them change.
-                isSearching={this.state.isSearching}
+                isSearching={isSearching}
                 selectedSearchResult={this.state.selectedSearchResult}
                 searchQuery={this.state.searchQuery}
                 showSideBySideDiff={this.props.showSideBySideDiff}
@@ -619,85 +685,139 @@ export class SideBySideDiff extends React.Component<
    * more than one row.
    */
   private getRowSelectableGroupDetails(
-    row: SimplifiedDiffRow,
-    prev: SimplifiedDiffRow,
-    next: SimplifiedDiffRow
+    rowIndex: number
   ): IRowSelectableGroup | null {
-    if (!('hunkStartLine' in row)) {
-      // can't be a selection hunk without a hunkStartLine
-      return null
-    }
-
     const { diff, hoveredHunk } = this.state
 
-    const selectableType = [
-      DiffRowType.Added,
-      DiffRowType.Deleted,
-      DiffRowType.Modified,
-    ]
-
-    if (!selectableType.includes(row.type)) {
-      // We only care about selectable rows
-      return null
-    }
-
-    const range = findInteractiveOriginalDiffRange(
-      diff.hunks,
-      row.hunkStartLine
+    const rows = getDiffRows(
+      diff,
+      this.props.showSideBySideDiff,
+      this.canExpandDiff()
     )
-    if (range === null) {
-      // We only care about ranges with more than one line
+    const row = rows[rowIndex]
+
+    if (row === undefined || !isRowChanged(row)) {
       return null
     }
 
+    const { hunkStartLine } = row
+    const staticData = this.getRowSelectableGroupStaticData(hunkStartLine, rows)
+    const { diffRowStartIndex, diffRowStopIndex } = staticData
+
+    const isFirst = diffRowStartIndex === rowIndex
+    const isCheckAllRenderedInRow =
+      isFirst ||
+      (diffRowStartIndex < this.renderedStartIndex &&
+        rowIndex === this.renderedStartIndex)
+
+    return {
+      isFirst,
+      isCheckAllRenderedInRow,
+      isHovered: hoveredHunk === hunkStartLine,
+      selectionState: this.getSelectableGroupSelectionState(
+        diff.hunks,
+        hunkStartLine
+      ),
+      height: this.getRowSelectableGroupHeight(
+        diffRowStartIndex,
+        diffRowStopIndex
+      ),
+      staticData,
+    }
+  }
+
+  private getSelectableGroupSelectionState(
+    hunks: ReadonlyArray<DiffHunk>,
+    hunkStartLine: number
+  ): DiffSelectionType {
     const selection = this.getSelection()
     if (selection === undefined) {
-      // We only care about selectable rows.. so if no selection, no selectable rows
-      return null
+      return DiffSelectionType.None
+    }
+
+    const range = findInteractiveOriginalDiffRange(hunks, hunkStartLine)
+    if (range === null) {
+      //Shouldn't happen, but if it does, we can't do anything with it
+      return DiffSelectionType.None
     }
 
     const { from, to } = range
 
-    const { lineNumbers, lineNumbersIdentifiers, diffType } =
-      this.getRowGroupLineNumberData(row.hunkStartLine)
+    return selection.isRangeSelected(from, to - from + 1)
+  }
+
+  private getRowSelectableGroupHeight = (from: number, to: number) => {
+    const start =
+      from > this.renderedStartIndex ? from : this.renderedStartIndex
+
+    const stop =
+      this.renderedStopIndex !== undefined && to > this.renderedStopIndex + 10
+        ? this.renderedStopIndex + 10
+        : to
+
+    let height = 0
+    for (let i = start; i <= stop; i++) {
+      height += this.getRowHeight({ index: i })
+    }
+
+    return height
+  }
+
+  private getSelectableGroupRowIndexRange(
+    hunkStartLine: number,
+    rows: ReadonlyArray<SimplifiedDiffRow>
+  ) {
+    const diffRowStartIndex = rows.findIndex(
+      r => isRowChanged(r) && r.hunkStartLine === hunkStartLine
+    )
+
+    let diffRowStopIndex = diffRowStartIndex
+
+    while (
+      rows[diffRowStopIndex + 1] !== undefined &&
+      isRowChanged(rows[diffRowStopIndex + 1])
+    ) {
+      diffRowStopIndex++
+    }
+
     return {
-      isFirst: prev === undefined || !selectableType.includes(prev.type),
-      isLast: next === undefined || !selectableType.includes(next.type),
-      isHovered: hoveredHunk === row.hunkStartLine,
-      selectionState: selection.isRangeSelected(from, to - from + 1),
-      height: this.getRowSelectableGroupHeight(row.hunkStartLine),
-      lineNumbers: Array.from(lineNumbers),
-      lineNumbersIdentifiers,
-      diffType,
+      diffRowStartIndex,
+      diffRowStopIndex,
     }
   }
 
-  private getRowGroupLineNumberData = (hunkStartLine: number) => {
-    const rows = getDiffRows(
-      this.state.diff,
-      this.props.showSideBySideDiff,
-      this.canExpandDiff()
-    )
+  private getRowSelectableGroupStaticData = (
+    hunkStartLine: number,
+    rows: ReadonlyArray<SimplifiedDiffRow>
+  ): IRowSelectableGroupStaticData => {
+    const cachedStaticData =
+      this.rowSelectableGroupStaticDataCache.get(hunkStartLine)
+    if (cachedStaticData !== undefined) {
+      return cachedStaticData
+    }
+
+    const { diffRowStartIndex, diffRowStopIndex } =
+      this.getSelectableGroupRowIndexRange(hunkStartLine, rows)
 
     const lineNumbers = new Set<number>()
     let hasAfter = false
     let hasBefore = false
 
-    const lineNumbersIdentifiers = rows.flatMap(r => {
-      if (!('hunkStartLine' in r) || r.hunkStartLine !== hunkStartLine) {
-        return []
-      }
+    const groupRows = rows.slice(diffRowStartIndex, diffRowStopIndex + 1)
 
+    const lineNumbersIdentifiers: Array<CheckBoxIdentifier> = []
+
+    for (const r of groupRows) {
       if (r.type === DiffRowType.Added) {
         lineNumbers.add(r.data.lineNumber)
         hasAfter = true
-        return `${r.data.lineNumber}-after`
+        lineNumbersIdentifiers.push(`${r.data.lineNumber}-after`)
       }
 
       if (r.type === DiffRowType.Deleted) {
         lineNumbers.add(r.data.lineNumber)
         hasBefore = true
-        return `${r.data.lineNumber}-before`
+        lineNumbersIdentifiers.push(`${r.data.lineNumber}-before`)
       }
 
       if (r.type === DiffRowType.Modified) {
@@ -705,14 +825,12 @@ export class SideBySideDiff extends React.Component<
         hasBefore = true
         lineNumbers.add(r.beforeData.lineNumber)
         lineNumbers.add(r.afterData.lineNumber)
-        return [
+        lineNumbersIdentifiers.push(
           `${r.beforeData.lineNumber}-before`,
-          `${r.afterData.lineNumber}-after`,
-        ]
+          `${r.afterData.lineNumber}-after`
+        )
       }
-
-      return []
-    })
+    }
 
     const diffType =
       hasAfter && hasBefore
@@ -720,22 +838,17 @@ export class SideBySideDiff extends React.Component<
         : hasAfter
         ? DiffRowType.Added
         : DiffRowType.Deleted
-    return { lineNumbersIdentifiers, lineNumbers, diffType }
-  }
 
-  private getRowSelectableGroupHeight = (hunkStartLine: number) => {
-    const rows = getDiffRows(
-      this.state.diff,
-      this.props.showSideBySideDiff,
-      this.canExpandDiff()
-    )
+    const data: IRowSelectableGroupStaticData = {
+      diffRowStartIndex,
+      diffRowStopIndex,
+      diffType,
+      lineNumbers: Array.from(lineNumbers).sort(),
+      lineNumbersIdentifiers,
+    }
 
-    return rows.reduce((acc, r, index) => {
-      if (!('hunkStartLine' in r) || r.hunkStartLine !== hunkStartLine) {
-        return acc
-      }
-      return acc + this.getRowHeight({ index })
-    }, 0)
+    this.rowSelectableGroupStaticDataCache.set(hunkStartLine, data)
+    return data
   }
 
   private renderRow = ({ index, parent, style, key }: ListRowProps) => {
@@ -773,14 +886,7 @@ export class SideBySideDiff extends React.Component<
 
     const rowWithTokens = this.createFullRow(row, index)
 
-    const rowSelectableGroupDetails = this.getRowSelectableGroupDetails(
-      row,
-      prev,
-      next
-    )
-
-    // Just temporary until pass the whole row group data down.
-    const isHunkHovered = !!rowSelectableGroupDetails?.isHovered
+    const rowSelectableGroupDetails = this.getRowSelectableGroupDetails(index)
 
     return (
       <CellMeasurer
@@ -796,7 +902,6 @@ export class SideBySideDiff extends React.Component<
             lineNumberWidth={lineNumberWidth}
             numRow={index}
             isDiffSelectable={canSelect(this.props.file)}
-            isHunkHovered={isHunkHovered}
             rowSelectableGroup={rowSelectableGroupDetails}
             showSideBySideDiff={this.props.showSideBySideDiff}
             hideWhitespaceInDiff={this.props.hideWhitespaceInDiff}
@@ -809,7 +914,6 @@ export class SideBySideDiff extends React.Component<
             onContextMenuLine={this.onContextMenuLine}
             onContextMenuHunk={this.onContextMenuHunk}
             onContextMenuExpandHunk={this.onContextMenuExpandHunk}
-            onContextMenuText={this.onContextMenuText}
             onHideWhitespaceInDiffChanged={
               this.props.onHideWhitespaceInDiffChanged
             }
@@ -1264,6 +1368,9 @@ export class SideBySideDiff extends React.Component<
     const kind = expansionType === DiffHunkExpansionType.Down ? 'down' : 'up'
 
     this.expandHunk(diff.hunks[hunkIndex], kind)
+
+    this.ariaLiveChangeSignal = !this.ariaLiveChangeSignal
+    this.setState({ ariaLiveMessage: 'Expanded' })
   }
 
   private onClickHunk = (hunkStartLine: number, select: boolean) => {
@@ -1287,8 +1394,18 @@ export class SideBySideDiff extends React.Component<
   /**
    * Handler to show a context menu when the user right-clicks on the diff text.
    */
-  private onContextMenuText = () => {
+  private onContextMenuText = (evt: React.MouseEvent | MouseEvent) => {
     const selectionLength = window.getSelection()?.toString().length ?? 0
+
+    if (
+      evt.target instanceof HTMLElement &&
+      (evt.target.closest('.line-number') !== null ||
+        evt.target.closest('.hunk-handle') !== null || // Windows uses the label element
+        evt.target.closest('.hunk-expansion-handle') !== null ||
+        evt.target instanceof HTMLInputElement) // macOS users the input element which is adjacent to the .hunk-handle
+    ) {
+      return
+    }
 
     const items: IMenuItem[] = [
       {
@@ -1384,7 +1501,11 @@ export class SideBySideDiff extends React.Component<
 
     this.diffToRestore = diff
 
-    this.setState({ diff: updatedDiff })
+    this.ariaLiveChangeSignal = !this.ariaLiveChangeSignal
+    this.setState({
+      diff: updatedDiff,
+      ariaLiveMessage: 'Expanded',
+    })
   }
 
   private onCollapseExpandedLines = () => {
@@ -1496,56 +1617,93 @@ export class SideBySideDiff extends React.Component<
     }
   }
 
-  private onSearch = (searchQuery: string, direction: 'next' | 'previous') => {
-    let { selectedSearchResult, searchResults: searchResults } = this.state
-    const { showSideBySideDiff } = this.props
-    const { diff } = this.state
+  private onSearch = (searchQuery: string, direction: SearchDirection) => {
+    const { searchResults } = this.state
 
-    // If the query is unchanged and we've got tokens we'll continue, else we'll restart
-    if (searchQuery === this.state.searchQuery && searchResults !== undefined) {
-      if (selectedSearchResult === undefined) {
-        selectedSearchResult = 0
-      } else {
-        const delta = direction === 'next' ? 1 : -1
-
-        // http://javascript.about.com/od/problemsolving/a/modulobug.htm
-        selectedSearchResult =
-          (selectedSearchResult + delta + searchResults.length) %
-          searchResults.length
-      }
+    if (searchQuery?.trim() === '') {
+      this.resetSearch(true, 'No results')
+    } else if (searchQuery === this.state.searchQuery && searchResults) {
+      this.continueSearch(searchResults, direction)
     } else {
-      searchResults = calcSearchTokens(
-        diff,
-        showSideBySideDiff,
+      this.startSearch(searchQuery, direction)
+    }
+  }
+
+  private startSearch = (searchQuery: string, direction: SearchDirection) => {
+    const searchResults = calcSearchTokens(
+      this.state.diff,
+      this.props.showSideBySideDiff,
+      searchQuery,
+      this.canExpandDiff()
+    )
+
+    if (searchResults === undefined || searchResults.length === 0) {
+      this.resetSearch(true, `No results for "${searchQuery}"`)
+    } else {
+      const ariaLiveMessage = `Result 1 of ${searchResults.length} for "${searchQuery}"`
+
+      this.scrollToSearchResult(0)
+
+      this.ariaLiveChangeSignal = !this.ariaLiveChangeSignal
+
+      this.setState({
         searchQuery,
-        this.canExpandDiff()
-      )
-      selectedSearchResult = 0
-
-      if (searchResults === undefined || searchResults.length === 0) {
-        this.resetSearch(true)
-        return
-      }
+        searchResults,
+        selectedSearchResult: 0,
+        ariaLiveMessage,
+      })
     }
+  }
 
-    const scrollToRow = searchResults.get(selectedSearchResult)?.row
+  private continueSearch = (
+    searchResults: SearchResults,
+    direction: SearchDirection
+  ) => {
+    const { searchQuery } = this.state
+    let { selectedSearchResult = 0 } = this.state
 
-    if (scrollToRow !== undefined) {
-      this.virtualListRef.current?.scrollToRow(scrollToRow)
-    }
+    const delta = direction === 'next' ? 1 : -1
 
-    this.setState({ searchQuery, searchResults, selectedSearchResult })
+    // https://web.archive.org/web/20090717035140if_/javascript.about.com/od/problemsolving/a/modulobug.htm
+    selectedSearchResult =
+      (selectedSearchResult + delta + searchResults.length) %
+      searchResults.length
+
+    const ariaLiveMessage = `Result ${selectedSearchResult + 1} of ${
+      searchResults.length
+    } for "${searchQuery}"`
+
+    this.scrollToSearchResult(selectedSearchResult)
+
+    this.ariaLiveChangeSignal = !this.ariaLiveChangeSignal
+    this.setState({
+      searchResults,
+      selectedSearchResult,
+      ariaLiveMessage,
+    })
   }
 
   private onSearchCancel = () => {
     this.resetSearch(false)
   }
 
-  private resetSearch(isSearching: boolean) {
+  private scrollToSearchResult = (index: number) => {
+    const { searchResults } = this.state
+
+    const scrollToRow = searchResults?.get(index)?.row
+
+    if (scrollToRow !== undefined) {
+      this.virtualListRef.current?.scrollToRow(scrollToRow)
+    }
+  }
+
+  private resetSearch(isSearching: boolean, searchLiveMessage: string = '') {
+    this.ariaLiveChangeSignal = !this.ariaLiveChangeSignal
     this.setState({
       selectedSearchResult: undefined,
       searchQuery: undefined,
       searchResults: undefined,
+      ariaLiveMessage: searchLiveMessage,
       isSearching,
     })
   }

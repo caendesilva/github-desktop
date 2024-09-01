@@ -20,7 +20,12 @@ import { shouldRenderApplicationMenu } from './lib/features'
 import { matchExistingRepository } from '../lib/repository-matching'
 import { getDotComAPIEndpoint } from '../lib/api'
 import { getVersion, getName } from './lib/app-proxy'
-import { getOS, isWindowsAndNoLongerSupportedByElectron } from '../lib/get-os'
+import {
+  getOS,
+  isOSNoLongerSupportedByElectron,
+  isMacOSAndNoLongerSupportedByElectron,
+  isWindowsAndNoLongerSupportedByElectron,
+} from '../lib/get-os'
 import { MenuEvent } from '../main-process/menu'
 import {
   Repository,
@@ -58,6 +63,8 @@ import {
   sendReady,
   isInApplicationFolder,
   selectAllWindowContents,
+  installWindowsCLI,
+  uninstallWindowsCLI,
 } from './main-process-proxy'
 import { DiscardChanges } from './discard-changes'
 import { Welcome } from './welcome'
@@ -168,10 +175,13 @@ import { TestNotifications } from './test-notifications/test-notifications'
 import { NotificationsDebugStore } from '../lib/stores/notifications-debug-store'
 import { PullRequestComment } from './notifications/pull-request-comment'
 import { UnknownAuthors } from './unknown-authors/unknown-authors-dialog'
-import { UnsupportedOSBannerDismissedAtKey } from './banners/windows-version-no-longer-supported-banner'
+import { UnsupportedOSBannerDismissedAtKey } from './banners/os-version-no-longer-supported-banner'
 import { offsetFromNow } from '../lib/offset-from'
-import { getNumber } from '../lib/local-storage'
+import { getBoolean, getNumber } from '../lib/local-storage'
 import { RepoRulesBypassConfirmation } from './repository-rules/repo-rules-bypass-confirmation'
+import { IconPreviewDialog } from './octicons/icon-preview-dialog'
+import { accessibilityBannerDismissed } from './banners/accessibilty-settings-banner'
+import { enableDiffCheckMarksAndLinkUnderlines } from '../lib/feature-flag'
 
 const MinuteInMilliseconds = 1000 * 60
 const HourInMilliseconds = MinuteInMilliseconds * 60
@@ -317,6 +327,10 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   public componentWillUnmount() {
     window.clearInterval(this.updateIntervalHandle)
+
+    if (__DARWIN__) {
+      window.removeEventListener('keydown', this.onMacOSWindowKeyDown)
+    }
   }
 
   private async performDeferredLaunchActions() {
@@ -356,16 +370,50 @@ export class App extends React.Component<IAppProps, IAppState> {
       this.showPopup({ type: PopupType.MoveToApplicationsFolder })
     }
 
-    this.checkIfThankYouIsInOrder()
+    this.setOnOpenBanner()
+  }
 
-    if (isWindowsAndNoLongerSupportedByElectron()) {
+  private onOpenAccessibilitySettings = () => {
+    this.props.dispatcher.showPopup({
+      type: PopupType.Preferences,
+      initialSelectedTab: PreferencesTab.Accessibility,
+    })
+  }
+
+  /**
+   * This method sets the app banner on opening the app. The last banner set in
+   * this method will be the one shown as only one banner is shown at a time.
+   * The only exception is the update available banner is always
+   * prioritized over other banners.
+   *
+   * Priority:
+   * 1. OS Not Supported by Electron
+   * 2. Accessibility Settings Banner
+   * 3. Thank you banner
+   */
+  private setOnOpenBanner() {
+    if (isOSNoLongerSupportedByElectron()) {
       const dismissedAt = getNumber(UnsupportedOSBannerDismissedAtKey, 0)
 
       // Remind the user that they're running an unsupported OS every 90 days
       if (dismissedAt < offsetFromNow(-90, 'days')) {
-        this.setBanner({ type: BannerType.WindowsVersionNoLongerSupported })
+        this.setBanner({ type: BannerType.OSVersionNoLongerSupported })
+        return
       }
     }
+
+    if (
+      enableDiffCheckMarksAndLinkUnderlines() &&
+      getBoolean(accessibilityBannerDismissed) !== true
+    ) {
+      this.setBanner({
+        type: BannerType.AccessibilitySettingsBanner,
+        onOpenAccessibilitySettings: this.onOpenAccessibilitySettings,
+      })
+      return
+    }
+
+    this.checkIfThankYouIsInOrder()
   }
 
   private onMenuEvent(name: MenuEvent): any {
@@ -451,8 +499,12 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.openPullRequest()
       case 'preview-pull-request':
         return this.startPullRequest()
-      case 'install-cli':
-        return this.props.dispatcher.installCLI()
+      case 'install-darwin-cli':
+        return this.props.dispatcher.installDarwinCLI()
+      case 'install-windows-cli':
+        return installWindowsCLI()
+      case 'uninstall-windows-cli':
+        return uninstallWindowsCLI()
       case 'open-external-editor':
         return this.openCurrentRepositoryInExternalEditor()
       case 'select-all':
@@ -495,6 +547,8 @@ export class App extends React.Component<IAppProps, IAppState> {
         return this.showFakeCherryPickConflictBanner()
       case 'show-test-merge-successful-banner':
         return this.showFakeMergeSuccessfulBanner()
+      case 'show-icon-test-dialog':
+        return this.showIconTestDialog()
       default:
         return assertNever(name, `Unknown menu event name: ${name}`)
     }
@@ -608,6 +662,14 @@ export class App extends React.Component<IAppProps, IAppState> {
       this.props.dispatcher.setBanner({
         type: BannerType.SuccessfulMerge,
         ourBranch: 'fake-branch',
+      })
+    }
+  }
+
+  private async showIconTestDialog() {
+    if (__DEV__) {
+      this.props.dispatcher.showPopup({
+        type: PopupType.TestIcons,
       })
     }
   }
@@ -728,6 +790,13 @@ export class App extends React.Component<IAppProps, IAppState> {
     if (isWindowsAndNoLongerSupportedByElectron()) {
       log.error(
         `Can't check for updates on Windows 8.1 or older. Next available update only supports Windows 10 and later`
+      )
+      return
+    }
+
+    if (isMacOSAndNoLongerSupportedByElectron()) {
+      log.error(
+        `Can't check for updates on macOS 10.14 or older. Next available update only supports macOS 10.15 and later`
       )
       return
     }
@@ -1126,6 +1195,10 @@ export class App extends React.Component<IAppProps, IAppState> {
       window.addEventListener('keyup', this.onWindowKeyUp)
     }
 
+    if (__DARWIN__) {
+      window.addEventListener('keydown', this.onMacOSWindowKeyDown)
+    }
+
     document.addEventListener('focus', this.onDocumentFocus, {
       capture: true,
     })
@@ -1133,6 +1206,31 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private onDocumentFocus = (event: FocusEvent) => {
     this.props.dispatcher.appFocusedElementChanged()
+  }
+
+  /**
+   * Manages keyboard shortcuts specific to macOS.
+   * - adds Shift+F10 to open the context menus (like on Windows so macOS
+   *   keyboard users are not required to use VoiceOver to trigger context
+   *   menus)
+   */
+  private onMacOSWindowKeyDown = (event: KeyboardEvent) => {
+    // We do not want to override Shift+F10 behavior for the context menu on Windows.
+    if (!__DARWIN__) {
+      return
+    }
+
+    if (event.defaultPrevented) {
+      return
+    }
+
+    if (event.shiftKey && event.key === 'F10') {
+      document.activeElement?.dispatchEvent(
+        new Event('contextmenu', {
+          bubbles: true, // Required for React's event system
+        })
+      )
+    }
   }
 
   /**
@@ -1653,11 +1751,17 @@ export class App extends React.Component<IAppProps, IAppState> {
             showCommitLengthWarning={this.state.showCommitLengthWarning}
             notificationsEnabled={this.state.notificationsEnabled}
             optOutOfUsageTracking={this.state.optOutOfUsageTracking}
+            useExternalCredentialHelper={this.state.useExternalCredentialHelper}
             enterpriseAccount={this.getEnterpriseAccount()}
             repository={repository}
             onDismissed={onPopupDismissedFn}
             selectedShell={this.state.selectedShell}
             selectedTheme={this.state.selectedTheme}
+            selectedTabSize={this.state.selectedTabSize}
+            useCustomEditor={this.state.useCustomEditor}
+            customEditor={this.state.customEditor}
+            useCustomShell={this.state.useCustomShell}
+            customShell={this.state.customShell}
             repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
             onOpenFileInExternalEditor={this.openFileInExternalEditor}
             underlineLinks={this.state.underlineLinks}
@@ -1691,6 +1795,8 @@ export class App extends React.Component<IAppProps, IAppState> {
             signInState={this.state.signInState}
             dispatcher={this.props.dispatcher}
             onDismissed={onPopupDismissedFn}
+            isCredentialHelperSignIn={popup.isCredentialHelperSignIn}
+            credentialHelperUrl={popup.credentialHelperUrl}
           />
         )
       case PopupType.AddRepository:
@@ -1852,13 +1958,19 @@ export class App extends React.Component<IAppProps, IAppState> {
           <CLIInstalled key="cli-installed" onDismissed={onPopupDismissedFn} />
         )
       case PopupType.GenericGitAuthentication:
+        const onDismiss = () => {
+          popup.onDismiss?.()
+          onPopupDismissedFn()
+        }
+
         return (
           <GenericGitAuthentication
             key="generic-git-authentication"
-            hostname={popup.hostname}
-            onDismiss={onPopupDismissedFn}
-            onSave={this.onSaveCredentials}
-            retryAction={popup.retryAction}
+            remoteUrl={popup.remoteUrl}
+            username={popup.username}
+            // eslint-disable-next-line react/jsx-no-bind
+            onDismiss={onDismiss}
+            onSave={popup.onSubmit}
           />
         )
       case PopupType.ExternalEditorFailed:
@@ -2562,6 +2674,14 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.TestIcons: {
+        return (
+          <IconPreviewDialog
+            key="octicons-preview"
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
       default:
         return assertNever(popup, `Unknown popup type: ${popup}`)
     }
@@ -2643,21 +2763,6 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   private onOpenShellIgnoreWarning = (path: string) => {
     this.props.dispatcher.openShell(path, true)
-  }
-
-  private onSaveCredentials = async (
-    hostname: string,
-    username: string,
-    password: string,
-    retryAction: RetryAction
-  ) => {
-    await this.props.dispatcher.saveGenericGitCredentials(
-      hostname,
-      username,
-      password
-    )
-
-    this.props.dispatcher.performRetry(retryAction)
   }
 
   private onCheckForUpdates = () => this.checkForUpdates(false)
@@ -2778,7 +2883,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     const externalEditorLabel = this.state.selectedExternalEditor
       ? this.state.selectedExternalEditor
       : undefined
-    const shellLabel = this.state.selectedShell
+    const { useCustomShell, selectedShell } = this.state
     const filterText = this.state.repositoryFilterText
     return (
       <RepositoriesList
@@ -2798,7 +2903,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         onShowRepository={this.showRepository}
         onOpenInExternalEditor={this.openInExternalEditor}
         externalEditorLabel={externalEditorLabel}
-        shellLabel={shellLabel}
+        shellLabel={useCustomShell ? undefined : selectedShell}
         dispatcher={this.props.dispatcher}
       />
     )
@@ -2972,7 +3077,9 @@ export class App extends React.Component<IAppProps, IAppState> {
       onRemoveRepositoryAlias: onRemoveRepositoryAlias,
       onViewOnGitHub: this.viewOnGitHub,
       repository: repository,
-      shellLabel: this.state.selectedShell,
+      shellLabel: this.state.useCustomShell
+        ? undefined
+        : this.state.selectedShell,
     })
 
     showContextualMenu(items)
@@ -3271,9 +3378,9 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     if (selectedState.type === SelectionType.Repository) {
-      const externalEditorLabel = state.selectedExternalEditor
-        ? state.selectedExternalEditor
-        : undefined
+      const externalEditorLabel = state.useCustomEditor
+        ? undefined
+        : state.selectedExternalEditor ?? undefined
 
       return (
         <RepositoryView
@@ -3307,6 +3414,9 @@ export class App extends React.Component<IAppProps, IAppState> {
             state.askForConfirmationOnCheckoutCommit
           }
           accounts={state.accounts}
+          isExternalEditorAvailable={
+            state.useCustomEditor || state.selectedExternalEditor !== null
+          }
           externalEditorLabel={externalEditorLabel}
           resolvedExternalEditor={state.resolvedExternalEditor}
           onOpenInExternalEditor={this.onOpenInExternalEditor}
@@ -3367,8 +3477,14 @@ export class App extends React.Component<IAppProps, IAppState> {
       ? ApplicationTheme.Light
       : this.state.currentTheme
 
+    const currentTabSize = this.state.selectedTabSize
+
     return (
-      <div id="desktop-app-chrome" className={className}>
+      <div
+        id="desktop-app-chrome"
+        className={className}
+        style={{ tabSize: currentTabSize }}
+      >
         <AppTheme theme={currentTheme} />
         {this.renderTitlebar()}
         {this.state.showWelcomeFlow

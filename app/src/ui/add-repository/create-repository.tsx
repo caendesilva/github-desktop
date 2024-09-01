@@ -23,8 +23,6 @@ import { ILicense, getLicenses, writeLicense } from './licenses'
 import { writeGitAttributes } from './git-attributes'
 import { getDefaultDir, setDefaultDir } from '../lib/default-dir'
 import { Dialog, DialogContent, DialogFooter, DialogError } from '../dialog'
-import { Octicon } from '../octicons'
-import * as octicons from '../octicons/octicons.generated'
 import { LinkButton } from '../lib/link-button'
 import { PopupType } from '../../models/popup'
 import { Ref } from '../lib/ref'
@@ -63,6 +61,14 @@ export const isGitRepository = async (path: string) => {
     // verify that it's a repository (or worktree). So we'll fall back to this
     // naive approximation.
     return directoryExists(join(path, '.git'))
+  }
+
+  if (type.kind === 'regular') {
+    // If the path is a regular repository, we'll check if the top level. If it
+    // isn't than, the path is a subfolder of the repository and a user may want
+    // to make it into a repository.
+    // TODO: Opportunity to provide information about submodules?
+    return type.topLevelWorkingDirectory === path
   }
 
   return type.kind !== 'missing'
@@ -442,10 +448,16 @@ export class CreateRepository extends React.Component<
     }
 
     return (
-      <Row className="warning-helper-text">
-        <Octicon symbol={octicons.alert} />
-        Will be created as {sanitizedName}
-      </Row>
+      <InputWarning
+        id="repo-sanitized-name-warning"
+        trackedUserInput={this.state.name}
+        ariaLiveMessage={`Will be created as ${sanitizedName}. Spaces and invalid characters have been replaced by hyphens.`}
+      >
+        <p>Will be created as {sanitizedName}</p>
+        <span className="sr-only">
+          Spaces and invalid characters have been replaced by hyphens.
+        </span>
+      </InputWarning>
     )
   }
 
@@ -624,7 +636,7 @@ export class CreateRepository extends React.Component<
               label="Name"
               placeholder="repository name"
               onValueChanged={this.onNameChanged}
-              ariaDescribedBy="existing-repository-path-error"
+              ariaDescribedBy="existing-repository-path-error repo-sanitized-name-warning"
             />
           </Row>
 
