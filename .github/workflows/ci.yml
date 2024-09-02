@@ -66,7 +66,7 @@ jobs:
     name: ${{ matrix.friendlyName }} ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: read
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +112,15 @@ jobs:
           KEY_PASSWORD: ${{ secrets.APPLE_APPLICATION_CERT_PASSWORD }}
           npm_config_arch: ${{ matrix.arch }}
           TARGET_ARCH: ${{ matrix.arch }}
+      - name: Create GitHub prerelease
+        if: matrix.os == 'windows-2019'
+        run: |
+          gh release create "build-${{ github.sha }}" --prerelease --title "build-${{ github.sha }}" \
+            --notes "Pre-release for build ${{ github.sha }}" \
+            "dist/GitHubDesktopSetup-${{ matrix.arch }}.exe"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Prepare testing environment
         if: matrix.arch == 'x64'
         run: yarn test:setup
