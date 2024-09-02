@@ -115,7 +115,7 @@ jobs:
       - name: Create GitHub prerelease
         if: matrix.os == 'windows-2019'
         run: |
-          Start-Process gh -ArgumentList 'release', 'create', 'build-${{ github.sha }}', '--prerelease', '--title', 'build-${{ github.sha }}', '--notes', 'Pre-release for build ${{ github.sha }}', 'dist/GitHubDesktopSetup-${{ matrix.arch }}.exe' -NoNewWindow -Wait
+          Start-Process gh -ArgumentList 'release', 'create', 'build-${{ github.sha }}', '--prerelease', '--title', 'build-${{ github.sha }}', '--notes', 'Pre-release for build ${{ github.sha }}', 'dist/Windows-x64.exe' -NoNewWindow -Wait
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
