@@ -226,6 +226,7 @@ export class CommitMessage extends React.Component<
   private descriptionTextAreaScrollDebounceId: number | null = null
 
   private coAuthorInputRef = React.createRef<AuthorInput>()
+  private summaryInputRef = React.createRef<AutocompletingInput>()
 
   private readonly COMMIT_MSG_ERROR_BTN_ID = 'commit-message-failure-hint'
 
@@ -471,6 +472,16 @@ export class CommitMessage extends React.Component<
       this.props.onCommitMessageFocusSet()
     }
   }
+  
+  private focusSummaryIfNotFocused() {
+    if (
+      this.summaryTextInput !== null &&
+      document.activeElement !== this.summaryTextInput
+    ) {
+      this.summaryTextInput.focus()
+      this.props.onCommitMessageFocusSet()
+    }
+  }
 
   private onSummaryChanged = (summary: string) => {
     this.setState({ summary })
@@ -650,6 +661,9 @@ export class CommitMessage extends React.Component<
     ) {
       this.createCommit()
       event.preventDefault()
+    } else if (!isShortcutKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      // Only focus if it's a regular keypress (not a shortcut)
+      this.focusSummaryIfNotFocused()
     }
   }
 
@@ -884,8 +898,11 @@ export class CommitMessage extends React.Component<
     this.descriptionTextArea = elem
   }
 
-  private onSummaryInputRef = (elem: HTMLInputElement | null) => {
-    this.summaryTextInput = elem
+  private onSummaryInputRef = (elem: AutocompletingInput | null) => {
+    this.summaryTextInput = elem?.elementRef.current ?? null
+    if (elem) {
+      this.summaryInputRef.current = elem
+    }
   }
 
   private onFocusContainerClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -1367,6 +1384,7 @@ export class CommitMessage extends React.Component<
         className={className}
         onContextMenu={this.onContextMenu}
         onKeyDown={this.onKeyDown}
+        tabIndex={-1}
       >
         <div className={summaryClassName}>
           {this.renderAvatar()}
